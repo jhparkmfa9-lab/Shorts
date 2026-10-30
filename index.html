@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>10월의 고요함을 깨는 쇼츠</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #0b0f24; }
+  #stage { position: relative; width: 1080px; height: 1920px; overflow: hidden; }
+  #c { position: absolute; inset: 0; width: 1080px; height: 1920px; }
+</style>
+</head>
+<body>
+<div id="stage" data-composition-id="october" data-start="0" data-duration="30" data-width="1080" data-height="1920">
+  <canvas id="c" class="clip" width="1080" height="1920" data-start="0" data-duration="30" data-track-index="0"></canvas>
+  <audio id="music" class="clip" src="music.wav" data-start="0" data-duration="30" data-track-index="1" data-volume="1"></audio>
+</div>
+<script>
+// Everything is drawn as dots (pointillism). draw(t) is a pure function of time -> seekable.
+const W = 1080, H = 1920, BEAT = 0.5, DROP = 3;
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+const FONT = '900 {S}px "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif';
+
+function rng(s) { return () => { s |= 0; s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const lerp = (a, b, k) => a + (b - a) * k;
+const easeOutBack = (k) => { const c = 1.9; return 1 + (c + 1) * Math.pow(k - 1, 3) + c * Math.pow(k - 1, 2); };
+const easeOut = (k) => 1 - Math.pow(1 - k, 3);
+function beatInfo(t) { const b = (t - DROP) / BEAT; if (b < 0) return { n: -1, ph: 0, pulse: 0 };
+  const ph = b - Math.floor(b); return { n: Math.floor(b), ph, pulse: Math.exp(-ph * 5) }; }
+function dot(x, y, r, col) { if (r <= 0.2) return; ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832); ctx.fill(); }
+const hsl = (h, s, l, a = 1) => `hsla(${h},${s}%,${l}%,${a})`;
+
+// ---------- point caches ----------
+const cache = {};
+function textPts(str, size, step) {
+  const key = str + size + step; if (cache[key]) return cache[key];
+  const lines = str.split("\n"), oc = document.createElement("canvas"); oc.width = W; oc.height = size * 1.25 * lines.length + 40;
+  const o = oc.getContext("2d"); o.font = FONT.replace("{S}", size); o.textAlign = "center"; o.textBaseline = "middle"; o.fillStyle = "#fff";
+  lines.forEach((ln, i) => o.fillText(ln, W / 2, 20 + size * 0.62 + i * size * 1.25));
+  const d = o.getImageData(0, 0, oc.width, oc.height).data, pts = [], r = rng(key.length * 97 + size);
+  for (let y = 0; y < oc.height; y += step) for (let x = 0; x < W; x += step) {
+    const jx = x + (r() - 0.5) * step * 0.5, jy = y + (r() - 0.5) * step * 0.5;
+    if (d[(Math.floor(jy) * W + Math.floor(jx)) * 4 + 3] > 128)
+      pts.push({ x: jx - W / 2, y: jy - oc.height / 2, r: r(), a: r() * 6.28, sx: (r() - 0.5) * 2, sy: (r() - 0.5) * 2 });
+  }
+  return (cache[key] = pts);
+}
+function shapePts(key, inside, rad, step) {
+  if (cache[key]) return cache[key]; const pts = [], r = rng(key.length * 131);
+  for (let y = -rad; y <= rad; y += step) for (let x = -rad; x <= rad; x += step) {
+    const jx = x + (r() - 0.5) * step * 0.6, jy = y + (r() - 0.5) * step * 0.6, v = inside(jx, jy);
+    if (v) pts.push({ x: jx, y: jy, v, r: r(), sx: (r() - 0.5) * 2, sy: (r() - 0.5) * 2 });
+  }
+  return (cache[key] = pts);
+}
+
+// dot-text that assembles from scattered dots, bounces on the beat, then explodes away
+function dotText(str, t, t0, t1, cx, cy, size, step, colFn, opt = {}) {
+  if (t < t0 || t > t1 + 0.6) return;
+  const pts = textPts(str, size, step), bi = beatInfo(t);
+  const inK = easeOutBack(clamp((t - t0) / 0.45)), outK = clamp((t - t1) / 0.6);
+  const sc = 1 + (opt.bounce ?? 0.06) * bi.pulse, wob = (opt.wobble ?? 0) * Math.sin(t * 7);
+  for (const p of pts) {
+    let x = p.x * sc, y = p.y * sc + Math.sin(p.x * 0.02 + t * 6) * wob;
+    const fx = p.sx * 900, fy = p.sy * 1200;
+    x = lerp(fx, x, inK) + p.sx * 1400 * easeOut(outK); y = lerp(fy, y, inK) + p.sy * 1600 * easeOut(outK);
+    const rr = step * (0.36 + p.r * 0.22) * (1 - outK) * (1 + bi.pulse * 0.25);
+    dot(cx + x, cy + y, rr, colFn(p, t));
+  }
+}
+
+// ---------- background field ----------
+const BG = (() => { const r = rng(42), a = []; for (let i = 0; i < 2600; i++) a.push({ x: r() * W, y: r() * H, r: r(), h: r(), s: r() }); return a; })();
+const palettes = [ // [hue, hueSpread, sat, light, dotScale]
+  { t: 0, h: 225, hs: 25, s: 45, l: 18, k: 0.55 }, { t: 3, h: 28, hs: 30, s: 95, l: 55, k: 1 },
+  { t: 10, h: 10, hs: 40, s: 85, l: 52, k: 1 }, { t: 17, h: 275, hs: 35, s: 70, l: 38, k: 1 }, { t: 24, h: 0, hs: 360, s: 70, l: 26, k: 0.9 }];
+function palAt(t) { let p = palettes[0]; for (const q of palettes) if (t >= q.t) p = q; return p; }
+function background(t) {
+  const p = palAt(t), bi = beatInfo(t);
+  const flash = t >= DROP ? Math.exp(-(t - DROP) * 4) : 0;
+  ctx.fillStyle = t < DROP ? "#0b0f24" : hsl(p.h, p.s * 0.6, p.l * 0.3); ctx.fillRect(0, 0, W, H);
+  for (const d of BG) {
+    let h = p.h + (d.h - 0.5) * p.hs, l = p.l + (d.s - 0.5) * 20 + (d.y / H) * (t < DROP ? 6 : -14);
+    if (t >= 24) h = (d.x * 0.25 + d.y * 0.1 + t * 120) % 360;
+    let x = d.x, y = d.y;
+    if (t < DROP) { y = (d.y + t * 6 * d.r) % H; }
+    else { x += Math.sin(t * 2 + d.y * 0.01) * 6; y += Math.cos(t * 2 + d.x * 0.01) * 6; }
+    const rr = (3 + d.r * 7) * p.k * (1 + bi.pulse * 0.45 * (0.5 + d.s)) + flash * 10;
+    dot(x, y, rr, hsl(h, p.s, clamp(l + flash * 60, 0, 95), 0.85));
+  }
+}
+
+// ---------- shapes ----------
+const pumpkin = (x, y) => { const nx = x / 210, ny = y / 170; const body = nx * nx + ny * ny < 1;
+  if (y < -160 && Math.abs(x + 10) < 22 && y > -230) return 3; if (!body) return 0;
+  const eye = (ex) => { const u = (x - ex) / 45, v = (y + 30) / 40; return v > -1 && v < 1 && Math.abs(u) < (1 - v) / 2 + 0.1; };
+  if (eye(-80) || eye(80)) return 2; if (y > 40 && y < 95 && Math.abs(x) < 120 - (y - 40) * 0.6 && Math.sin(x * 0.09) > -0.6) return 2;
+  return Math.abs(Math.sin(x * 0.022)) < 0.18 ? 4 : 1; };
+const leaf = (x, y) => { const a = Math.atan2(y, x), rr = Math.hypot(x, y);
+  const lim = 90 * (1 + Math.sin(a) * 0.05) * (0.55 + 0.45 * Math.abs(Math.cos(2.5 * (a + 1.5708)))) * (1 + 0.15 * Math.sin(10 * a));
+  if (Math.abs(x) < 5 && y > 0 && y < 120) return 2; return rr < lim ? (Math.abs(Math.sin(5 * a)) < 0.06 ? 2 : 1) : 0; };
+const sun = (x, y) => { const rr = Math.hypot(x, y); if (rr > 150) return 0;
+  const lens = (ex) => Math.hypot((x - ex) / 62, (y + 15) / 42) < 1; if (lens(-62) || lens(62)) return 2;
+  if (Math.abs(y + 25) < 7 && Math.abs(x) < 140) return 2;
+  if (y > 45 && y < 85 && Math.abs(x) < 70 && Math.hypot(x, y - 25) > 45) return 3; return 1; };
+const ghost = (x, y) => { const head = y < 0 && Math.hypot(x, y) < 120; const body = y >= 0 && y < 170 + 22 * Math.sin(x * 0.07) && Math.abs(x) < 120;
+  if (!head && !body) return 0; if (Math.hypot((x + 42) / 20, (y + 20) / 30) < 1 || Math.hypot((x - 42) / 20, (y + 20) / 30) < 1) return 2;
+  if (Math.hypot(x / 26, (y - 45) / 34) < 1) return 2; return 1; };
+
+function drawShape(key, fn, rad, step, cx, cy, s, rot, colFn, t, t0, t1) {
+  if (t < t0 || t > t1 + 0.6) return;
+  const pts = shapePts(key, fn, rad, step), inK = easeOutBack(clamp((t - t0) / 0.5)), outK = easeOut(clamp((t - t1) / 0.6));
+  const c = Math.cos(rot), sn = Math.sin(rot), bi = beatInfo(t);
+  for (const p of pts) {
+    let x = p.x * s.x, y = p.y * s.y; const rx = x * c - y * sn, ry = x * sn + y * c;
+    const X = cx + lerp(p.sx * 700, rx, inK) + p.sx * 1300 * outK, Y = cy + lerp(p.sy * 900, ry, inK) + p.sy * 1500 * outK;
+    dot(X, Y, step * (0.38 + p.r * 0.2) * (1 - outK) * (1 + bi.pulse * 0.2), colFn(p, t));
+  }
+}
+
+// ---------- scenes ----------
+function draw(t) {
+  t = Math.min(t, 29.999);
+  background(t);
+  const bi = beatInfo(t), sq = 1 - 0.18 * bi.pulse;
+
+  // S0: quiet October (0-3)
+  for (let i = 0; i < 5 && t < DROP + 0.6; i++) {
+    const r = rng(i + 9), lx = 150 + r() * 780, ly = -150 + ((t + i * 0.9) * 120) % 2100, out = clamp((t - DROP) / 0.5);
+    drawShape("leafS", leaf, 130, 9, lx + Math.sin(t * 1.5 + i) * 60 + out * (lx - 540) * 3, ly, { x: 0.55, y: 0.55 }, Math.sin(t + i) * 0.8,
+      (p) => p.v === 2 ? hsl(20, 60, 22) : hsl(15 + p.r * 30, 70, 35 + p.r * 15), t, 0, DROP);
+  }
+  dotText("10월의 고요함...", t, 0.4, DROP - 0.05, W / 2, 820, 110, 9, (p) => hsl(210 + p.r * 30, 30, 70 + p.r * 20), { bounce: 0 });
+  dotText("쉿.", t, 1.6, DROP - 0.05, W / 2, 1060, 140, 10, (p) => hsl(40, 20, 85), { bounce: 0 });
+
+  // S1: BOOM + dancing pumpkin (3-10)
+  const ps = { x: (1 + 0.15 * bi.pulse) * 1.15, y: sq * 1.15 };
+  drawShape("pumpkin", pumpkin, 240, 10, W / 2, 1180 - 90 * Math.abs(Math.sin(Math.PI * bi.ph)) * (t > DROP ? 1 : 0), ps,
+    Math.sin(((t - DROP) / BEAT) * Math.PI) * 0.18,
+    (p) => p.v === 2 ? hsl(55, 100, 60 + 30 * bi.pulse) : p.v === 3 ? hsl(110, 60, 30) : p.v === 4 ? hsl(22, 95, 38) : hsl(25 + p.r * 15, 100, 50 + p.r * 10), t, DROP, 10);
+  dotText("10월이\n조용하다고?", t, DROP + 0.05, 6.4, W / 2, 470, 130, 10, (p) => hsl(50 + p.r * 15, 100, 92 - p.r * 15), { wobble: 10 });
+  dotText("응 아니야~", t, 6.5, 10, W / 2, 470, 150, 11, (p, tt) => hsl((p.x * 0.3 + tt * 200) % 360, 100, 65), { bounce: 0.12, wobble: 18 });
+
+  // S2: leaf rain + cool sun (10-17)
+  if (t > 9.6 && t < 17.6) for (let i = 0; i < 9; i++) {
+    const r = rng(i * 7 + 3), lx = 100 + r() * 880, ly = -200 + ((t - 10) * (260 + r() * 200) + r() * 1900) % 2300;
+    drawShape("leafB", leaf, 130, 8, lx + Math.sin(t * 3 + i) * 50, ly, { x: 0.7 + 0.15 * bi.pulse, y: 0.7 }, t * (1 + r()) + i,
+      (p) => p.v === 2 ? hsl(15, 70, 25) : hsl([0, 18, 35, 48][i % 4] + p.r * 15, 95, 45 + p.r * 15), t, 10, 17);
+  }
+  drawShape("sun", sun, 160, 9, W / 2, 1150 + 40 * Math.sin(((t - DROP) / BEAT) * Math.PI), { x: 1.5 * (1 + 0.1 * bi.pulse), y: 1.5 * sq },
+    Math.sin(((t - DROP) / BEAT) * Math.PI / 2) * 0.25,
+    (p) => p.v === 2 ? hsl(250, 30, 8 + p.r * 10) : p.v === 3 ? hsl(350, 90, 50) : hsl(45 + p.r * 15, 100, 55 + p.r * 15), t, 10, 17);
+  dotText("가을 텐션\nUP UP!", t, 10.1, 13.4, W / 2, 470, 140, 10, (p) => hsl(55 + p.r * 10, 100, 95 - p.r * 20), { wobble: 12 });
+  dotText("낙엽 대신\n텐션이 떨어짐 X", t, 13.5, 17, W / 2, 470, 105, 9, (p, tt) => hsl((p.y + tt * 150) % 360, 100, 70), { bounce: 0.1 });
+
+  // S3: ghosts dance (17-24)
+  for (let i = 0; i < 3; i++) {
+    const gx = [260, 540, 820][i], ph = (t - DROP) / BEAT * Math.PI + i * 2.1;
+    drawShape("ghost", ghost, 200, 9, gx + 50 * Math.sin(ph * 0.5), 1230 - 70 * Math.abs(Math.sin(ph)) - (i === 1 ? 80 : 0),
+      { x: (i === 1 ? 1.05 : 0.8) * (1 + 0.12 * bi.pulse), y: (i === 1 ? 1.05 : 0.8) * sq }, Math.sin(ph * 0.5) * 0.3,
+      (p) => p.v === 2 ? hsl(270, 50, 10) : hsl(260 + p.r * 40, 60, 88 + p.r * 10), t, 17 + i * 0.25, 24);
+  }
+  dotText("할로윈\nD-1", t, 17.1, 20.4, W / 2, 470, 170, 11, (p) => hsl(28 + p.r * 15, 100, 60), { wobble: 16, bounce: 0.1 });
+  dotText("유령도 춤추는\n10월 30일", t, 20.5, 24, W / 2, 470, 110, 9, (p) => hsl(120 + p.r * 30, 90, 65), { bounce: 0.1 });
+
+  // S4: finale (24-30)
+  dotText("10월\n끝까지\n신나게!", t, 24.1, 28, W / 2, 900, 200, 12, (p, tt) => hsl((p.x * 0.25 + p.y * 0.2 + tt * 220) % 360, 100, 72), { bounce: 0.14, wobble: 14 });
+  dotText("좋아요 꾹!", t, 28.1, 31, W / 2, 900, 170, 11, (p, tt) => hsl((p.x * 0.4 + tt * 300) % 360, 100, 74), { bounce: 0.18 });
+  // confetti bursts
+  [DROP, 10, 17, 24, 29.5].forEach((tb, k) => {
+    const age = t - tb; if (age < 0 || age > 1.8) return; const r = rng(k * 51 + 5);
+    for (let i = 0; i < 160; i++) { const a = r() * 6.283, sp = 500 + r() * 1300, hue = r() * 360;
+      const x = W / 2 + Math.cos(a) * sp * easeOut(clamp(age / 1.2)), y = 960 + Math.sin(a) * sp * easeOut(clamp(age / 1.2)) + 500 * age * age;
+      dot(x, y, (6 + r() * 12) * (1 - age / 1.8), hsl(hue, 100, 60)); }
+  });
+}
+
+draw(0);
+// property setter redraws even when seek() suppresses callbacks
+let cur = 0;
+const state = { get t() { return cur; }, set t(v) { cur = v; draw(v); } };
+const tl = gsap.timeline({ paused: true });
+tl.to(state, { t: 30, duration: 30, ease: "none" }, 0);
+window.__timelines = window.__timelines || {};
+window.__timelines.october = tl;
+</script>
+</body>
+</html>
